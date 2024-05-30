@@ -53,7 +53,7 @@ export class Veet extends DurableObject {
 			if (!session.id) {
 				session.id = JSON.parse(msg).id;
 				ws.serializeAttachment({ ...ws.deserializeAttachment(), id: session.id });
-				this.broadcast(ws, { type: 'joined', joined: session.id });
+				// this.broadcast(ws, { type: 'joined', joined: session.id });
 				ws.send(JSON.stringify({ ready: true }));
 			}
 
@@ -106,8 +106,8 @@ export class Veet extends DurableObject {
 export default {
 	async fetch(request, env, ctx) {
 		return await handleErrors(request, async () => {
-			// let id = env.VEET.idFromName(new URL(request.url).pathname);
-			let id = env.VEET.idFromName('veet');
+			let id = env.VEET.idFromName(new URL(request.url).pathname);
+			// let id = env.VEET.idFromName('veet');
 			let stub = env.VEET.get(id);
 			return stub.fetch(request);
 		});
