@@ -51,9 +51,9 @@ export class Veet extends DurableObject {
 				return;
 			}
 			if (!session.id) {
-				session.id = JSON.parse(msg).id;
+				console.log(session.client);
+				session.id = JSON.parse(msg).client;
 				ws.serializeAttachment({ ...ws.deserializeAttachment(), id: session.id });
-				// this.broadcast(ws, { type: 'joined', joined: session.id });
 				ws.send(JSON.stringify({ ready: true }));
 			}
 
