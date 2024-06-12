@@ -51,10 +51,9 @@ export class Veet extends DurableObject {
 				return;
 			}
 			if (!session.id) {
-				console.log(session.client);
-				session.id = JSON.parse(msg).client;
+				session.id = crypto.randomUUID();
 				ws.serializeAttachment({ ...ws.deserializeAttachment(), id: session.id });
-				ws.send(JSON.stringify({ ready: true }));
+				ws.send(JSON.stringify({ ready: true, id: session.id }));
 			}
 
 			this.broadcast(ws, msg);
@@ -64,33 +63,28 @@ export class Veet extends DurableObject {
 	}
 
 	broadcast(senderWs, msg) {
-		const leavers = [];
+		const senderID = this.sessions.get(senderWs).id;
 		this.sessions.forEach((session, ws) => {
-			try {
-				if (ws !== senderWs) {
-					ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg));
+			if (ws !== senderWs) {
+				switch (typeof msg) {
+					case 'string':
+						const m = JSON.parse(msg);
+						ws.send(JSON.stringify({ ...m, id: senderID }));
+						break;
+					default:
+						ws.send(JSON.stringify({ ...msg, id: senderID }));
+						break;
 				}
-			} catch (error) {
-				leavers.push(session);
-				session.quit = true;
-				this.sessions.delete(ws);
-			}
-		});
-
-		leavers.forEach((leaver) => {
-			if (leaver.id) {
-				this.broadcast(senderWs, { type: 'left', id: leaver.id });
 			}
 		});
 	}
 
 	async closeOrErrorHandler(ws) {
 		let session = this.sessions.get(ws) || {};
-		session.quit = true;
-		this.sessions.delete(ws);
-
 		if (session.id) {
-			this.broadcast(ws, { type: 'left', id: session.id });
+			this.broadcast(ws, { type: 'left' });
+			session.quit = true;
+			this.sessions.delete(ws);
 		}
 	}
 
