@@ -1,109 +1,67 @@
 import { DurableObject } from 'cloudflare:workers';
 
-async function handleErrors(request, func) {
-	try {
-		return await func();
-	} catch (err) {
-		if (request.headers.get('Upgrade') == 'websocket') {
-			const pair = new WebSocketPair();
-			pair[1].accept();
-			pair[1].send(JSON.stringify({ error: err.stack }));
-			pair[1].close(1011, 'Uncaught exception during session setup');
-			return new Response(null, { status: 101, webSocket: pair[0] });
-		} else {
-			return new Response(err.stack, { status: 500 });
-		}
-	}
-}
 export class Veet extends DurableObject {
 	constructor(ctx, env) {
 		super(ctx, env);
-		this.ctx = ctx;
 		this.storage = ctx.storage;
-		this.env = env;
 
+		//keep track of connected sessions
 		this.sessions = new Map();
 		this.ctx.getWebSockets().forEach((ws) => {
-			const meta = ws.deserializeAttachment();
-			this.sessions.set(ws, { ...meta });
+			this.sessions.set(ws, { ...ws.deserializeAttachment() });
 		});
 	}
-
-	async fetch(request) {
-		return await handleErrors(request, async () => {
-			const pair = new WebSocketPair();
-			await this.handleSession(pair[1]);
-			return new Response(null, { status: 101, webSocket: pair[0] });
-		});
+	async fetch(_req) {
+		const pair = new WebSocketPair();
+		this.ctx.acceptWebSocket(pair[1]);
+		this.sessions.set(pair[1], {});
+		return new Response(null, { status: 101, webSocket: pair[0] });
 	}
-
-	async handleSession(ws) {
-		this.ctx.acceptWebSocket(ws);
-
-		this.sessions.set(ws, {});
+	webSocketMessage(ws, msg) {
+		const session = this.sessions.get(ws);
+		if (!session.id) {
+			session.id = crypto.randomUUID();
+			ws.serializeAttachment({ ...ws.deserializeAttachment(), id: session.id });
+			ws.send(JSON.stringify({ ready: true, id: session.id }));
+		}
+		this.broadcast(ws, msg);
 	}
-
-	async webSocketMessage(ws, msg) {
-		try {
-			const session = this.sessions.get(ws);
-			if (session.quit) {
-				ws.close(1011, 'websocket broken');
-				return;
+	broadcast(sender, msg) {
+		const id = this.sessions.get(sender).id;
+		for (let [ws] of this.sessions) {
+			if (sender == ws) continue;
+			switch (typeof msg) {
+				case 'string':
+					ws.send(JSON.stringify({ ...JSON.parse(msg), id }));
+					break;
+				default:
+					ws.send(JSON.stringify({ ...msg, id }));
+					break;
 			}
-			if (!session.id) {
-				session.id = crypto.randomUUID();
-				ws.serializeAttachment({ ...ws.deserializeAttachment(), id: session.id });
-				ws.send(JSON.stringify({ ready: true, id: session.id }));
-			}
-
-			this.broadcast(ws, msg);
-		} catch (error) {
-			ws.send(JSON.stringify({ error: error.stack }));
 		}
 	}
-
-	broadcast(senderWs, msg) {
-		const senderID = this.sessions.get(senderWs).id;
-		this.sessions.forEach((session, ws) => {
-			if (ws !== senderWs) {
-				switch (typeof msg) {
-					case 'string':
-						const m = JSON.parse(msg);
-						ws.send(JSON.stringify({ ...m, id: senderID }));
-						break;
-					default:
-						ws.send(JSON.stringify({ ...msg, id: senderID }));
-						break;
-				}
-			}
-		});
+	close(ws) {
+		const session = this.sessions.get(ws);
+		if (!session?.id) return;
+		this.broadcast(ws, { type: 'left' });
+		this.sessions.delete(ws);
 	}
-
-	async closeOrErrorHandler(ws) {
-		let session = this.sessions.get(ws) || {};
-		if (session.id) {
-			this.broadcast(ws, { type: 'left' });
-			session.quit = true;
-			this.sessions.delete(ws);
-		}
+	webSocketClose(ws) {
+		this.close(ws);
 	}
-
-	async webSocketClose(ws) {
-		this.closeOrErrorHandler(ws);
-	}
-
-	async webSocketError(ws) {
-		this.closeOrErrorHandler(ws);
+	webSocketError(ws) {
+		this.close(ws);
 	}
 }
 
 export default {
-	async fetch(request, env, ctx) {
-		return await handleErrors(request, async () => {
-			let id = env.VEET.idFromName(new URL(request.url).pathname);
-			// let id = env.VEET.idFromName('veet');
-			let stub = env.VEET.get(id);
-			return stub.fetch(request);
-		});
+	async fetch(request, env, _ctx) {
+		const upgrade = request.headers.get('Upgrade');
+		if (!upgrade || upgrade != 'websocket') {
+			return new Response('Expected upgrade to websocket', { status: 426 });
+		}
+		const id = env.VEET.idFromName(new URL(request.url).pathname);
+		const veet = env.VEET.get(id);
+		return veet.fetch(request);
 	},
 };
